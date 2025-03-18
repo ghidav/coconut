@@ -14,10 +14,11 @@ from transformers import PreTrainedTokenizerBase
 from transformers.data.data_collator import pad_without_fast_tokenizer_warning
 
 
-def get_dataset(path, tokenizer, max_size=1000000000, num_proc=1):
+def get_dataset(
+    path, tokenizer, start_answer_id, end_answer_id, max_size=1000000000, num_proc=1
+):
 
     def tokenize_sample(sample):
-
         question_tokenized = tokenizer.encode(
             sample["question"] + "\n", add_special_tokens=True
         )
@@ -25,9 +26,7 @@ def get_dataset(path, tokenizer, max_size=1000000000, num_proc=1):
             tokenizer.encode(s + "\n", add_special_tokens=False)
             for s in sample["steps"]
         ]
-        answer_tokenized = tokenizer.encode(
-            "### " + sample["answer"], add_special_tokens=False
-        ) + [tokenizer.eos_token_id]
+        answer_tokenized = tokenizer.encode(sample["answer"], add_special_tokens=False)
 
         sample = {
             "question_tokenized": question_tokenized,
@@ -47,7 +46,9 @@ def get_dataset(path, tokenizer, max_size=1000000000, num_proc=1):
         if dist.get_rank() == 0:
             processed_dataset = [
                 dataset.map(
-                    tokenize_sample, remove_columns=list(dataset.features), num_proc=num_proc
+                    tokenize_sample,
+                    remove_columns=list(dataset.features),
+                    num_proc=num_proc,
                 )
             ]
         else:
@@ -62,16 +63,18 @@ def get_dataset(path, tokenizer, max_size=1000000000, num_proc=1):
 
     # verify
     d = data[0]
-    complete = d["question"] + "\n" + "\n".join(d["steps"]) + "\n### " + d["answer"]
-    complete_tokenized = tokenizer.encode(complete, add_special_tokens=True) + [
-        tokenizer.eos_token_id
-    ]
-    assert (
-        complete_tokenized
-        == dataset[0]["question_tokenized"]
-        + list(itertools.chain.from_iterable(dataset[0]["steps_tokenized"]))
-        + dataset[0]["answer_tokenized"]
+    complete = (
+        d["question"]
+        + "\n"
+        + "\n".join(d["steps"])
+        + "\n<answer>"
+        + d["answer"]
+        + "</answer>"
     )
+    complete_tokenized = tokenizer.encode(complete, add_special_tokens=True)
+    assert complete_tokenized == dataset[0]["question_tokenized"] + list(
+        itertools.chain.from_iterable(dataset[0]["steps_tokenized"])
+    ) + [start_answer_id] + dataset[0]["answer_tokenized"] + [end_answer_id]
 
     return dataset
 
@@ -189,13 +192,14 @@ def get_question_latent_dataset(
     scheduled_stage,
     base_dataset_valid,
     configs,
-    start_id,
+    start_think_id,
     latent_id,
-    end_id,
+    end_think_id,
     no_special_marker=False,
+    num_proc=1,
 ):
 
-    def process_dataset(sample, num_proc=1):
+    def process_dataset(sample):
 
         if configs.pad_latent_to_max:
             max_latent_stage = configs.max_latent_stage
@@ -210,9 +214,9 @@ def get_question_latent_dataset(
 
         tokens = (
             sample["question_tokenized"]
-            + ([] if no_special_marker else [start_id])
+            + ([] if no_special_marker else [start_think_id])
             + [latent_id] * k
-            + ([] if no_special_marker else [end_id])
+            + ([] if no_special_marker else [end_think_id])
         )
 
         return {
@@ -223,7 +227,9 @@ def get_question_latent_dataset(
         }
 
     return base_dataset_valid.map(
-        process_dataset, remove_columns=list(base_dataset_valid.features), num_proc=num_proc
+        process_dataset,
+        remove_columns=list(base_dataset_valid.features),
+        num_proc=num_proc,
     )
 
 
@@ -231,16 +237,19 @@ def get_cot_latent_dataset(
     scheduled_stage,
     base_dataset,
     configs,
-    start_id,
+    start_think_id,
     latent_id,
-    end_id,
+    end_think_id,
+    start_answer_id,
+    end_answer_id,
     no_special_marker=False,
     shuffle=False,
+    num_proc=1,
 ):
 
     n_additional_tokens = 0 if no_special_marker else 2
 
-    def process_dataset(sample, num_proc=1):
+    def process_dataset(sample):
 
         if (
             random.random() < configs.uniform_prob
@@ -274,13 +283,15 @@ def get_cot_latent_dataset(
 
         tokens = (
             sample["question_tokenized"]
-            + ([] if no_special_marker else [start_id])
+            + ([] if no_special_marker else [start_think_id])
             + [latent_id] * n_latent_tokens
-            + ([] if no_special_marker else [end_id])
+            + ([] if no_special_marker else [end_think_id])
             + list(
                 itertools.chain.from_iterable(sample["steps_tokenized"][n_skip_steps:])
             )
+            + [start_answer_id]
             + sample["answer_tokenized"]
+            + [end_answer_id]
         )
 
         return {
@@ -304,7 +315,9 @@ def get_cot_latent_dataset(
     if torch.cuda.device_count() > 1:
         if dist.get_rank() == 0:
             processed_dataset = base_dataset.map(
-                process_dataset, remove_columns=list(base_dataset.features), num_proc=num_proc
+                process_dataset,
+                remove_columns=list(base_dataset.features),
+                num_proc=num_proc,
             )
             if shuffle:
                 processed_dataset = processed_dataset.shuffle()
@@ -316,7 +329,9 @@ def get_cot_latent_dataset(
 
     else:
         processed_dataset = base_dataset.map(
-            process_dataset, remove_columns=list(base_dataset.features), num_proc=num_proc
+            process_dataset,
+            remove_columns=list(base_dataset.features),
+            num_proc=num_proc,
         )
         if shuffle:
             processed_dataset = processed_dataset.shuffle()

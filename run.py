@@ -103,12 +103,16 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(configs.model_id)
     tokenizer = AutoTokenizer.from_pretrained(configs.model_id)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.add_tokens("<|start-latent|>")
-    tokenizer.add_tokens("<|end-latent|>")
-    tokenizer.add_tokens("<|latent|>")
-    latent_id = tokenizer.convert_tokens_to_ids("<|latent|>")
-    start_id = tokenizer.convert_tokens_to_ids("<|start-latent|>")
-    end_id = tokenizer.convert_tokens_to_ids("<|end-latent|>")
+    tokenizer.add_tokens("<think>")
+    tokenizer.add_tokens("</think>")
+    tokenizer.add_tokens("<thought>")
+    tokenizer.add_tokens("<answer>")
+    tokenizer.add_tokens("</answer>")
+    latent_id = tokenizer.convert_tokens_to_ids("<thought>")
+    start_think_id = tokenizer.convert_tokens_to_ids("<think>")
+    end_think_id = tokenizer.convert_tokens_to_ids("</think>")
+    start_answer_id = tokenizer.convert_tokens_to_ids("<answer>")
+    end_answer_id = tokenizer.convert_tokens_to_ids("</answer>")
 
     loaded = False
 
@@ -149,7 +153,7 @@ def main():
         target_id = tokenizer.convert_tokens_to_ids("<<")
         # initialize the new token embeddings with a known token
         # it helps stablize the training
-        for token_id in [latent_id, start_id, end_id]:
+        for token_id in [latent_id, start_think_id, end_think_id, start_answer_id, end_answer_id]:
             target_embedding = embeddings.weight.data[token_id]
             embeddings.weight.data[token_id] = target_embedding
             # The input embeddings and lm heads are tied in GPT2. So the code below is not necessary
@@ -161,7 +165,7 @@ def main():
         configs.coconut = False
 
     if configs.coconut:
-        model = Coconut(model, latent_id, start_id, end_id, tokenizer.eos_token_id)
+        model = Coconut(model, latent_id, start_think_id, end_think_id, tokenizer.eos_token_id)
 
     if configs.load_model_path != "None" and not loaded:
         print(model.load_state_dict(saved_weights, strict=False))
@@ -202,12 +206,22 @@ def main():
     cot_val = ["\n".join(d["steps"]) for d in json.load(open(configs.val_path))]
 
     base_dataset_valid = get_dataset(
-        configs.val_path, tokenizer, max_size=32 if configs.debug else 100000000
+        configs.val_path,
+        tokenizer,
+        start_answer_id,
+        end_answer_id,
+        max_size=32 if configs.debug else 100000000,
+        num_proc=configs.num_proc,
     )
 
     if not configs.only_eval:
         base_dataset_train = get_dataset(
-            configs.train_path, tokenizer, max_size=5000 if configs.debug else 100000000
+            configs.train_path,
+            tokenizer,
+            start_answer_id,
+            end_answer_id,
+            max_size=5000 if configs.debug else 100000000,
+            num_proc=configs.num_proc,
         )
 
     if "gsm" in configs.val_path:
@@ -248,10 +262,11 @@ def main():
             scheduled_stage,
             base_dataset_valid,
             configs,
-            start_id,
+            start_think_id,
             latent_id,
-            end_id,
+            end_think_id,
             no_special_marker=configs.cot or configs.no_cot or configs.no_thoughts,
+            num_proc=configs.num_proc,
         )
 
         valid_gen_dataloader = torch.utils.data.DataLoader(
@@ -269,11 +284,14 @@ def main():
                 scheduled_stage,
                 base_dataset_train,
                 configs,
-                start_id,
+                start_think_id,
                 latent_id,
-                end_id,
+                end_think_id,
+                start_answer_id,
+                end_answer_id,
                 no_special_marker=configs.cot or configs.no_cot or configs.no_thoughts,
                 shuffle=True,
+                num_proc=configs.num_proc,
             )
 
             train_dataloader = torch.utils.data.DataLoader(
@@ -293,10 +311,13 @@ def main():
                 scheduled_stage,
                 base_dataset_valid,
                 configs,
-                start_id,
+                start_think_id,
                 latent_id,
-                end_id,
+                end_think_id,
+                start_answer_id,
+                end_answer_id,
                 no_special_marker=configs.cot or configs.no_cot or configs.no_thoughts,
+                num_proc=configs.num_proc,
             )
 
             valid_loss_dataloader = torch.utils.data.DataLoader(
