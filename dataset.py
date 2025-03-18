@@ -14,7 +14,7 @@ from transformers import PreTrainedTokenizerBase
 from transformers.data.data_collator import pad_without_fast_tokenizer_warning
 
 
-def get_dataset(path, tokenizer, max_size=1000000000):
+def get_dataset(path, tokenizer, max_size=1000000000, num_proc=1):
 
     def tokenize_sample(sample):
 
@@ -47,7 +47,7 @@ def get_dataset(path, tokenizer, max_size=1000000000):
         if dist.get_rank() == 0:
             processed_dataset = [
                 dataset.map(
-                    tokenize_sample, remove_columns=list(dataset.features), num_proc=32
+                    tokenize_sample, remove_columns=list(dataset.features), num_proc=num_proc
                 )
             ]
         else:
@@ -57,7 +57,7 @@ def get_dataset(path, tokenizer, max_size=1000000000):
 
     else:
         dataset = dataset.map(
-            tokenize_sample, remove_columns=list(dataset.features), num_proc=32
+            tokenize_sample, remove_columns=list(dataset.features), num_proc=num_proc
         )
 
     # verify
@@ -195,7 +195,7 @@ def get_question_latent_dataset(
     no_special_marker=False,
 ):
 
-    def process_dataset(sample):
+    def process_dataset(sample, num_proc=1):
 
         if configs.pad_latent_to_max:
             max_latent_stage = configs.max_latent_stage
@@ -223,7 +223,7 @@ def get_question_latent_dataset(
         }
 
     return base_dataset_valid.map(
-        process_dataset, remove_columns=list(base_dataset_valid.features), num_proc=32
+        process_dataset, remove_columns=list(base_dataset_valid.features), num_proc=num_proc
     )
 
 
@@ -240,7 +240,7 @@ def get_cot_latent_dataset(
 
     n_additional_tokens = 0 if no_special_marker else 2
 
-    def process_dataset(sample):
+    def process_dataset(sample, num_proc=1):
 
         if (
             random.random() < configs.uniform_prob
@@ -304,7 +304,7 @@ def get_cot_latent_dataset(
     if torch.cuda.device_count() > 1:
         if dist.get_rank() == 0:
             processed_dataset = base_dataset.map(
-                process_dataset, remove_columns=list(base_dataset.features), num_proc=32
+                process_dataset, remove_columns=list(base_dataset.features), num_proc=num_proc
             )
             if shuffle:
                 processed_dataset = processed_dataset.shuffle()
@@ -316,7 +316,7 @@ def get_cot_latent_dataset(
 
     else:
         processed_dataset = base_dataset.map(
-            process_dataset, remove_columns=list(base_dataset.features), num_proc=32
+            process_dataset, remove_columns=list(base_dataset.features), num_proc=num_proc
         )
         if shuffle:
             processed_dataset = processed_dataset.shuffle()
